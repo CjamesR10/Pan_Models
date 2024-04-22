@@ -1,0 +1,5 @@
+# Ignore uncompressed data and finetuned models
+# Also uncompressed solutions
+data
+roberta_*_finetuned
+solutions
