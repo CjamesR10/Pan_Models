@@ -4,3 +4,4 @@ data
 roberta_*_finetuned
 solutions
 config.json
+.vscode

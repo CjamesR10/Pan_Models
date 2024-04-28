@@ -1,16 +1,20 @@
-import transformers
+from transformers import AutoTokenizer, AutoModelForCausalLM
 import torch
 import os
 import json
 import glob
 import argparse
+from itertools import chain
+from sklearn.metrics import f1_score
 from tqdm import tqdm
 if torch.cuda.is_available():
     torch.set_default_device('cuda')
+    print('cuda')
 else:
     torch.set_default_device('cpu')
+    print('cpu')
 
-def evaluate_file(path: str, pipeline, sys_message: str) -> list:
+def evaluate_file(path: str, tokenizer, model, sys_message: str) -> list:
     pairs = []
     # read input file
     with open(path, "r", newline="", encoding="utf-8") as fd:
@@ -28,7 +32,7 @@ def evaluate_file(path: str, pipeline, sys_message: str) -> list:
     # evaluate paragraph pairs
     predictions = []
     for pair in pairs:
-        pred = get_response(pipeline, sys_message, pair)
+        pred = get_response(tokenizer, model, sys_message, pair)
         match pred.strip():
             case '1':
                 pred = 1
@@ -41,44 +45,75 @@ def evaluate_file(path: str, pipeline, sys_message: str) -> list:
     return predictions
 
 def run_task(in_dir: str, model_id: str, sys_message: str) -> dict:
-    pipeline = transformers.pipeline(
-        'text-generation',
-        model=model_id,
-        model_kwargs={'torch_dtype': torch.bfloat16},
+    tokenizer = AutoTokenizer.from_pretrained(model_id)
+    model = AutoModelForCausalLM.from_pretrained(
+        model_id,
+        torch_dtype=torch.bfloat16,
         device_map='auto'
     )
     solutions = {}
+    i = 0
+    err = False
     for file in tqdm(glob.glob(os.path.join(in_dir, 'problem-*.txt'))):
+        i += 1
+        # reset model context to reduce memory overhead
         file_id = os.path.basename(file)[8:-4]
-        predictions = evaluate_file(file, pipeline, sys_message)
-        solutions[file_id] = predictions
+        try:
+            predictions = evaluate_file(file, tokenizer, model, sys_message)
+        except torch.cuda.OutOfMemoryError:
+            # don't just bail if we run out of memory
+            # instead clear context and skip
+            err = True
+        if err:
+            model = None
+            torch.cuda.empty_cache()
+            model = AutoModelForCausalLM.from_pretrained(
+                model_id,
+                torch_dtype=torch.bfloat16,
+                device_map='auto'
+            )
+            predictions = None
+            err = False
+        if predictions: solutions[file_id] = predictions
+        if i >= 400:
+            model = None
+            torch.cuda.empty_cache()
+            model = AutoModelForCausalLM.from_pretrained(
+                model_id,
+                torch_dtype=torch.bfloat16,
+                device_map='auto'
+            )
+            i = 0
+    model = None
+    torch.cuda.empty_cache()
     return solutions
 
-def get_response(pipeline, sys_message: str, user_message: str) -> str:
+def get_response(tokenizer, model, sys_message: str, user_message: str) -> str:
     # generate prompt
     messages = [
         {'role': 'system', 'content': sys_message},
         {'role': 'user', 'content': user_message}
     ]
-    prompt = pipeline.tokenizer.apply_chat_template(
+    input_ids = tokenizer.apply_chat_template(
         messages,
-        tokenize=False,
-        add_generation_prompt=True
-    )
+        add_generation_prompt=True,
+        return_tensors='pt'
+    ).to(model.device)
     # pass to pipeline
     terminators = [
-        pipeline.tokenizer.eos_token_id,
-        pipeline.tokenizer.convert_tokens_to_ids("<|eot_id|>")
+        tokenizer.eos_token_id,
+        tokenizer.convert_tokens_to_ids("<|eot_id|>")
     ]
-    outputs = pipeline(
-        prompt,
+    outputs = model.generate(
+        input_ids,
         max_new_tokens=1,
         eos_token_id=terminators,
         do_sample=True,
         temperature=0.6,
         top_p=0.9
     )
-    return outputs[0]['generated_text'][len(prompt):]
+    response = outputs[0][input_ids.shape[-1]:]
+    return tokenizer.decode(response, skip_special_tokens=True)
 
 def write_results(output: dict, dir: str):
     for f_id, predictions in output.items():
@@ -94,11 +129,30 @@ def read_truth_files(truth_dir: str) -> dict:
             truth[os.path.basename(truth_file)[6:-5]] = curr_truth
     return truth
 
+def extract_task_results(truth: dict, solutions: dict) -> tuple:
+    all_solutions = []
+    all_truth = []
+    for problem_id, truth_instance in sorted(truth.items()):
+        if len(truth_instance) != len(solutions[problem_id]):
+            print(
+                f"Solution length for problem {problem_id} is not correct, skipping.")
+            continue
+        all_truth.append(truth_instance)
+        all_solutions.append(solutions[problem_id])
+    return all_truth, all_solutions
+
+def compute_score(truth_dic, pred_dic):
+    truth, solutions = extract_task_results(truth_dic, pred_dic)
+    truth = list(chain.from_iterable(truth))
+    solutions = list(chain.from_iterable(solutions))
+
+    return f1_score(truth, solutions, average='macro', labels=[0,1], zero_division=0)
+
 def main():
     parser = argparse.ArgumentParser(description="Llama3 Style Change Detection Classifier")
     parser.add_argument("-i", "--input", 
                         help="path to the dir holding the problem files (in a dir for each dataset/task)",  
-                        default='.')
+                        default='data')
     parser.add_argument('-o', '--output',
                         help="path to the dir to write solution files to", 
                         default='.')
@@ -123,7 +177,15 @@ def main():
     task3 = run_task(os.path.join(in_dir, "hard/train"), model_id, sys_message)
     if args.evaluate:
         # evaluate
-        pass
+        task1_truth = read_truth_files(os.path.join(truth_dir, 'easy/train'))
+        task1_score = compute_score(task1_truth, task1)
+        task2_truth = read_truth_files(os.path.join(truth_dir, 'medium/train'))
+        task2_score = compute_score(task2_truth, task2)
+        task3_truth = read_truth_files(os.path.join(truth_dir, 'hard/train'))
+        task3_score = compute_score(task3_truth, task3)
+        print(f"Task 1 score: {task1_score:.3f}")
+        print(f"Task 2 score: {task2_score:.3f}")
+        print(f"Task 3 score: {task3_score:.3f}")
     else:
         # print
         write_results(task1, os.path.join(out_dir, 'easy'))
