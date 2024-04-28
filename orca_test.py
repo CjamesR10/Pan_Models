@@ -45,26 +45,15 @@ def evaluate_file(path: str, tokenizer, model, sys_message: str) -> list:
     return predictions
 
 def run_task(in_dir: str, model_id: str, sys_message: str) -> dict:
-    tokenizer = AutoTokenizer.from_pretrained(model_id)
+    tokenizer = AutoTokenizer.from_pretrained(model_id, use_fast=False)
     model = AutoModelForCausalLM.from_pretrained(
         model_id,
         torch_dtype=torch.bfloat16,
         device_map='auto'
     )
     solutions = {}
-    i = 0
     err = False
     for file in tqdm(glob.glob(os.path.join(in_dir, 'problem-*.txt'))):
-        if i >= 50:
-            model = None
-            torch.cuda.empty_cache()
-            model = AutoModelForCausalLM.from_pretrained(
-                model_id,
-                torch_dtype=torch.bfloat16,
-                device_map='auto'
-            )
-            i = 0
-        i += 1
         # reset model context to reduce memory overhead
         file_id = os.path.basename(file)[8:-4]
         try:
@@ -91,31 +80,15 @@ def run_task(in_dir: str, model_id: str, sys_message: str) -> dict:
 
 def get_response(tokenizer, model, sys_message: str, user_message: str) -> str:
     # generate prompt
-    messages = [
-        {'role': 'system', 'content': sys_message},
-        {'role': 'user', 'content': user_message}
-    ]
-    input_ids = tokenizer.apply_chat_template(
+    messages = f'<|im_start|>system\n{sys_message}<|im_end|>\n<|im_start|>user\n{user_message}<|im_end|>\n<|im_start|>assistant'
+    input_ids = tokenizer(
         messages,
-        add_generation_prompt=True,
         return_tensors='pt'
-    ).to(model.device)
-    # pass to pipeline
-    terminators = [
-        tokenizer.eos_token_id,
-        tokenizer.convert_tokens_to_ids("<|eot_id|>")
-    ]
-    outputs = model.generate(
-        input_ids,
-        max_new_tokens=1,
-        pad_token_id=tokenizer.eos_token_id,
-        eos_token_id=terminators,
-        do_sample=True,
-        temperature=0.6,
-        top_p=0.9
     )
-    response = outputs[0][input_ids.shape[-1]:]
-    return tokenizer.decode(response, skip_special_tokens=True)
+    # pass to pipeline
+    outputs = model.generate(input_ids['input_ids'])
+    response = tokenizer.batch_decode(outputs)[0]
+    return response[-5:-4]
 
 def write_results(output: dict, dir: str):
     for f_id, predictions in output.items():
@@ -170,7 +143,7 @@ def main():
     out_dir = args.output
     truth_dir = args.truth if args.truth else in_dir
 
-    model_id = 'meta-llama/Meta-Llama-3-8B-Instruct'
+    model_id = 'microsoft/Orca-2-7b'
     sys_message = "You are an expert in writing style analysis. When you are given two paragraphs, say '0' if they are written by the same person, or '1' if they are not. Do not explain your reasoning."
 
     # get results
