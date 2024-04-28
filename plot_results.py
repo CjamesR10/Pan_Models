@@ -25,7 +25,7 @@ for i, (roberta, orca, llama) in enumerate(zip(robertas, orcas, llamas)):
     plt.text(x[i] + bar_width, llama, f'{llama:.3f}', ha='center', va='bottom', fontsize=10)
 
 plt.xlabel('Models')
-plt.ylabel('F1')
+plt.ylabel('F1 Score')
 plt.title('Comparison of Model Results')
 
 plt.xticks(x, labels)
