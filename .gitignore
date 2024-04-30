@@ -2,6 +2,8 @@
 # Also uncompressed solutions
 data
 roberta_*_finetuned
-solutions
+base_solutions
+llama_solutions
+orca_solutions
 config.json
 .vscode

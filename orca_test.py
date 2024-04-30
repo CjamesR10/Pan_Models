@@ -163,8 +163,14 @@ def main():
         print(f"Task 3 score: {task3_score:.3f}")
     else:
         # print
+        if not os.path.exists(os.path.join(out_dir, 'easy')):
+            os.makedirs(os.path.join(out_dir, 'easy'))
         write_results(task1, os.path.join(out_dir, 'easy'))
+        if not os.path.exists(os.path.join(out_dir, 'medium')):
+            os.makedirs(os.path.join(out_dir, 'medium'))
         write_results(task2, os.path.join(out_dir, 'medium'))
+        if not os.path.exists(os.path.join(out_dir, 'hard')):
+            os.makedirs(os.path.join(out_dir, 'hard'))
         write_results(task3, os.path.join(out_dir, 'hard'))
 
 
