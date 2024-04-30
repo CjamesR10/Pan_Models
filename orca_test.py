@@ -130,7 +130,7 @@ def main():
                         default='data')
     parser.add_argument('-o', '--output',
                         help="path to the dir to write solution files to", 
-                        default='.')
+                        default='solutions')
     parser.add_argument('-e', '--evaluate',
                         help="whether to evaluate results or not. Will not write solutions to output dir",
                         action='store_true')
